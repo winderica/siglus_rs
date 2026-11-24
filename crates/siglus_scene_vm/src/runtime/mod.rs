@@ -17525,3 +17525,126 @@ mod load_message_window_tests {
 
 #[cfg(test)]
 mod object_mask_tests;
+
+#[cfg(test)]
+mod mwnd_name_clear_tests {
+    use super::*;
+
+    fn dispatch(ctx: &mut CommandContext, op: i32, args: &[Value]) -> bool {
+        forms::stage::dispatch_current_mwnd_global_op(ctx, op, args)
+    }
+
+    /// Finish the MESSAGE_WAIT queued by PRINT. The script is blocked here
+    /// before it can reach PAGE/R in the real VM loop.
+    fn finish_print_reveal(ctx: &mut CommandContext) {
+        ctx.ui.reveal_message_now();
+        assert!(ctx.wait.message_reveal_waiting());
+        if !ctx.wait.finish_message_reveal() {
+            ctx.ui.finish_message_reveal_wait();
+        }
+    }
+
+    /// Finish PAGE/R reveal + key wait by clicking.
+    fn click_message_key(ctx: &mut CommandContext) {
+        ctx.ui.reveal_message_now();
+        if ctx.wait.message_reveal_waiting() {
+            assert!(ctx.wait.finish_message_reveal());
+        }
+        assert!(ctx.wait.message_key_waiting());
+        assert!(!ctx.advance_message_wait(true));
+    }
+
+    fn backlog_entry(ctx: &CommandContext, text: &str) -> Option<globals::MsgBackEntry> {
+        ctx.globals
+            .msgbk_forms
+            .get(&ctx.ids.form_global_msgbk)
+            .and_then(|st| st.history.iter().find(|e| e.msg_str == text).cloned())
+    }
+
+    /// Visible name glyphs on the current mwnd. These are what the renderer
+    /// actually draws; `name_text` alone is not enough (a stale glyph list
+    /// keeps showing the previous speaker).
+    fn current_name_glyph_count(ctx: &CommandContext) -> usize {
+        ctx.globals
+            .stage_forms
+            .get(&ctx.ids.form_global_stage)
+            .and_then(|st| st.mwnd_lists.get(&ctx.globals.current_mwnd_stage_idx))
+            .and_then(|list| list.get(ctx.globals.current_mwnd_no.unwrap_or(0)))
+            .map(|m| m.name_glyphs.len())
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn named_line_then_page_then_monologue_clears_name() {
+        let mut ctx =
+            CommandContext::new(std::env::temp_dir().join("siglus-mwnd-name-clear-text"));
+        let msg_block = crate::runtime::constants::elm_value::GLOBAL_MSG_BLOCK as i32;
+        let page = crate::runtime::constants::elm_value::GLOBAL_PAGE as i32;
+        assert!(dispatch(&mut ctx, msg_block, &[]));
+        assert!(forms::stage::cd_name_current_mwnd(&mut ctx, "A"));
+        assert!(dispatch(&mut ctx, msg_block, &[]));
+        assert!(forms::stage::cd_text_current_mwnd(&mut ctx, "spoken", 0));
+        assert_eq!(ctx.ui.name_text().as_deref(), Some("A"));
+        finish_print_reveal(&mut ctx);
+
+        assert!(dispatch(&mut ctx, page, &[]));
+        click_message_key(&mut ctx);
+
+        assert!(dispatch(&mut ctx, msg_block, &[]));
+        assert!(forms::stage::cd_text_current_mwnd(&mut ctx, "thought", 1));
+        assert_eq!(ctx.ui.name_text(), None);
+        assert_eq!(current_name_glyph_count(&ctx), 0);
+        ctx.sync_mwnd_window_ui();
+        assert!(ctx.ui.mwnd.name.glyphs.is_empty());
+        assert_eq!(ctx.ui.message_text().as_deref(), Some("thought"));
+        let entry = backlog_entry(&ctx, "thought").expect("monologue backlog entry");
+        assert!(entry.disp_name.is_empty());
+    }
+
+    #[test]
+    fn close_then_monologue_clears_previous_speaker_glyphs() {
+        let mut ctx =
+            CommandContext::new(std::env::temp_dir().join("siglus-mwnd-name-clear-close"));
+        let msg_block = crate::runtime::constants::elm_value::GLOBAL_MSG_BLOCK as i32;
+        let page = crate::runtime::constants::elm_value::GLOBAL_PAGE as i32;
+        let close = crate::runtime::constants::elm_value::GLOBAL_CLOSE as i32;
+        assert!(dispatch(&mut ctx, msg_block, &[]));
+        assert!(forms::stage::cd_name_current_mwnd(&mut ctx, "A"));
+        assert!(dispatch(&mut ctx, msg_block, &[]));
+        assert!(forms::stage::cd_text_current_mwnd(&mut ctx, "spoken", 0));
+        assert!(current_name_glyph_count(&ctx) > 0);
+        finish_print_reveal(&mut ctx);
+
+        assert!(dispatch(&mut ctx, page, &[]));
+        click_message_key(&mut ctx);
+
+        // The real script (070_スピカzero line 366) closes the window between
+        // the speaker line and the following monologue. CLOSE must preserve
+        // the pending clear, and the next block must drop the visible name.
+        assert!(dispatch(&mut ctx, close, &[]));
+        assert!(dispatch(&mut ctx, msg_block, &[]));
+        assert!(forms::stage::cd_text_current_mwnd(&mut ctx, "thought", 1));
+        assert_eq!(ctx.ui.name_text(), None);
+        assert_eq!(current_name_glyph_count(&ctx), 0);
+        ctx.sync_mwnd_window_ui();
+        assert!(ctx.ui.mwnd.name.glyphs.is_empty());
+        assert_eq!(ctx.ui.message_text().as_deref(), Some("thought"));
+        let entry = backlog_entry(&ctx, "thought").expect("monologue backlog entry");
+        assert!(entry.disp_name.is_empty());
+    }
+
+    #[test]
+    fn text_in_same_message_block_keeps_speaker_name() {
+        let mut ctx =
+            CommandContext::new(std::env::temp_dir().join("siglus-mwnd-name-keep"));
+        let msg_block = crate::runtime::constants::elm_value::GLOBAL_MSG_BLOCK as i32;
+        assert!(dispatch(&mut ctx, msg_block, &[]));
+        assert!(forms::stage::cd_name_current_mwnd(&mut ctx, "A"));
+        assert!(dispatch(&mut ctx, msg_block, &[]));
+        assert!(forms::stage::cd_text_current_mwnd(&mut ctx, "spoken", 0));
+        finish_print_reveal(&mut ctx);
+        assert!(dispatch(&mut ctx, msg_block, &[]));
+        assert!(forms::stage::cd_text_current_mwnd(&mut ctx, "more", 1));
+        assert_eq!(ctx.ui.name_text().as_deref(), Some("A"));
+    }
+}

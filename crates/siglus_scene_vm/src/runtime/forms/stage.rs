@@ -14645,6 +14645,10 @@ fn clear_mwnd_message_block_now(ctx: &mut CommandContext, stage_idx: i64, m: &mu
     clear_mwnd_face_list(ctx, stage_idx, m);
     mwnd_clear_message_layout(m);
     m.name_text.clear();
+    // C_elm_mwnd::clear() -> clear_name() empties the whole C_elm_mwnd_name
+    // glyph list, not only its text. Keeping the stale glyphs here makes the
+    // renderer draw the previous speaker even though name_text is empty.
+    m.name_glyphs.clear();
     m.chara_color_mod = None;
     m.chara_moji_color = None;
     m.chara_shadow_color = None;
@@ -15625,6 +15629,7 @@ fn dispatch_mwnd_item_op(
         }
         MwndOpKind::ClearName => {
             m.name_text.clear();
+            m.name_glyphs.clear();
             m.chara_color_mod = None;
             m.chara_moji_color = None;
             m.chara_shadow_color = None;
